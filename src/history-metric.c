@@ -18,12 +18,14 @@ struct ltntstools_history_metric_s *ltntstools_history_metric_alloc(time_t now, 
 
 void ltntstools_history_metric_free(struct ltntstools_history_metric_s *m)
 {
-	free(m);
+	if (m) {
+		free(m);
+	}
 }
 
 int ltntstools_history_metric_collection_init(struct ltntstools_history_metric_collection_s *c, const char *name)
 {
-	if (!name || !name) {
+	if (!c || !name) {
 		return -1; /* Failed */
 	}
 
@@ -51,6 +53,10 @@ struct ltntstools_history_metric_collection_s *ltntstools_history_metric_collect
 
 void ltntstools_history_metric_collection_free(struct ltntstools_history_metric_collection_s *c)
 {
+	if (!c) {
+		return;
+	}
+
 	struct ltntstools_history_metric_s *m = NULL;
 
 	pthread_mutex_lock(&c->lock);
@@ -115,18 +121,16 @@ void ltntstools_history_metric_collection_reset(struct ltntstools_history_metric
 
 int ltntstools_history_metric_collection_count_until(struct ltntstools_history_metric_collection_s *c, time_t window, uint64_t *result)
 {
-	if (!c) {
+	if (!c || !result) {
 		return -1; /* Failed */
 	}
-
-	time_t now = time(NULL);
 
 	uint64_t total = 0;
 	struct ltntstools_history_metric_s *m = NULL;
 
 	pthread_mutex_lock(&c->lock);
 	xorg_list_for_each_entry(m, &c->list, list) {
-		if (now <= window) {
+		if (m->ts >= window) {
 			total += m->count;
 		}
 	}
@@ -139,7 +143,7 @@ int ltntstools_history_metric_collection_count_until(struct ltntstools_history_m
 
 int ltntstools_history_metric_collection_count_until_1hr(struct ltntstools_history_metric_collection_s *c, uint64_t *result)
 {
-	if (!c) {
+	if (!c || !result) {
 		return -1; /* Failed */
 	}
 	return ltntstools_history_metric_collection_count_until(c, time(NULL) - 3600, result);
@@ -147,7 +151,7 @@ int ltntstools_history_metric_collection_count_until_1hr(struct ltntstools_histo
 
 int ltntstools_history_metric_collection_count_until_24hr(struct ltntstools_history_metric_collection_s *c, uint64_t *result)
 {
-	if (!c) {
+	if (!c || !result) {
 		return -1; /* Failed */
 	}
 	return ltntstools_history_metric_collection_count_until(c, time(NULL) - 86400, result);
