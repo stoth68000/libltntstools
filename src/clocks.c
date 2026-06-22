@@ -112,6 +112,40 @@ int ltntstools_clock_is_established_wallclock(struct ltntstools_clock_s *clk)
 	return clk->establishedWT;
 }
 
+static int64_t ltntstools_clock_effective_wrap_value(struct ltntstools_clock_s *clk, int64_t ticksnow, int64_t ticksthen)
+{
+	int64_t wrap = clk->clockWrapValue;
+
+	/* Some call-sites and streams track PCR using the 33-bit PCR base value while
+	 * keeping a 27 MHz PCR timebase. If that 33-bit value wraps, using the full
+	 * 42-bit SCR modulus turns a normal wrap into about 26 hours of drift. */
+	if (clk->type == ltntstools_CLOCK_TYPE_PCR &&
+		ticksthen > ((MAX_PTS_VALUE / 100) * 95) &&
+		ticksnow < ((MAX_PTS_VALUE / 100) * 5)) {
+		wrap = MAX_PTS_VALUE + 1;
+	}
+
+	return wrap;
+}
+
+static void ltntstools_clock_rebase_wallclock(struct ltntstools_clock_s *clk, int64_t ticks)
+{
+	clk->clockWrapOccurences = 0;
+	clk->currentTime_ticks = ticks;
+	clk->monotonicTime_ticks = ticks;
+	clk->monotonicReference_ticks = ticks;
+	clk->establishedTime_ticks = ticks;
+	gettimeofday(&clk->establishedWalltime, NULL);
+	clk->establishedWT = 1;
+}
+
+static int ltntstools_clock_is_media_timestamp(struct ltntstools_clock_s *clk)
+{
+	return clk->type == ltntstools_CLOCK_TYPE_PCR ||
+		clk->type == ltntstools_CLOCK_TYPE_PTS ||
+		clk->type == ltntstools_CLOCK_TYPE_DTS;
+}
+
 void ltntstools_clock_establish_wallclock(struct ltntstools_clock_s *clk, int64_t ticks)
 {
 	clk->establishedWT = 1;
@@ -129,29 +163,44 @@ void ltntstools_clock_establish_wallclock(struct ltntstools_clock_s *clk, int64_
 void ltntstools_clock_set_ticks(struct ltntstools_clock_s *clk, int64_t ticks)
 {
 	int wrapped = 0;
+	int64_t wrapValue = ltntstools_clock_effective_wrap_value(clk, ticks, clk->currentTime_ticks);
 
 	if (clk->pendingDiscontinuity) {
 		clk->pendingDiscontinuity = 0;
-		clk->clockWrapOccurences = 0;
-		clk->currentTime_ticks = ticks;
-		clk->monotonicTime_ticks = ticks;
-		clk->monotonicReference_ticks = ticks;
-		clk->establishedTime_ticks = ticks;
-		gettimeofday(&clk->establishedWalltime, NULL);
-		clk->establishedWT = 1;
+		ltntstools_clock_rebase_wallclock(clk, ticks);
 		return;
 	}
 
-	/* If the new tick value jumps the clock backwards by more than 50%, assume it naturally wrapped */
-	if (ticks < (clk->currentTime_ticks / 50)) {
+	if (ltntstools_clock_is_media_timestamp(clk) && ticks < clk->currentTime_ticks) {
+		if (clk->ticks_per_second > 0 &&
+			(clk->currentTime_ticks - ticks) > (clk->ticks_per_second * 2))
+		{
+			clk->discontinuityCount++;
+			ltntstools_clock_rebase_wallclock(clk, ticks);
+		}
+		return;
+	}
+
+	/* If the new tick value jumps backwards by more than half of the active
+	 * modulus, assume it naturally wrapped instead of treating it as regression. */
+	if (wrapValue > 0 &&
+		ticks < clk->currentTime_ticks &&
+		(clk->currentTime_ticks - ticks) > (wrapValue / 2)) {
 		clk->clockWrapOccurences++;
 		wrapped = 1;
 	}
 
-	if (wrapped && clk->clockWrapValue > 0) {
-		clk->monotonicTime_ticks += ltntstools_clock_compute_delta(clk,
-			ticks, clk->monotonicReference_ticks);
+	if (wrapped && wrapValue > 0) {
+		clk->monotonicTime_ticks += (wrapValue - clk->monotonicReference_ticks) + ticks;
 		clk->monotonicReference_ticks = ticks;
+	} else
+	if (ticks < clk->currentTime_ticks &&
+		clk->ticks_per_second > 0 &&
+		(clk->currentTime_ticks - ticks) >= (clk->ticks_per_second / 2))
+	{
+		clk->discontinuityCount++;
+		ltntstools_clock_rebase_wallclock(clk, ticks);
+		return;
 	} else
 	if (ticks > clk->monotonicReference_ticks) {
 		if (clk->ticks_per_second > 0 && (ticks - clk->monotonicReference_ticks) > (clk->ticks_per_second / 5)) {
@@ -312,7 +361,11 @@ int64_t ltntstools_clock_compute_delta(struct ltntstools_clock_s *clk, int64_t t
 		return ticksnow - ticksthen;
 	}
 
-	return (clk->clockWrapValue - ticksthen) + ticksnow;
+	if (ltntstools_clock_is_media_timestamp(clk)) {
+		return 0;
+	}
+
+	return (ltntstools_clock_effective_wrap_value(clk, ticksnow, ticksthen) - ticksthen) + ticksnow;
 }
 
 /* JITTER_MAX: backward tolerance before clamping (optional). 0 = strict monotonic */
