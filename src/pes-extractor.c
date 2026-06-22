@@ -58,6 +58,9 @@ struct pes_extractor_s
 	uint32_t pusi_time_ms; /* Arrival duration of the entire pes */
 
 	int preventWrites; /* Used prevent write calls from modifying resources */
+
+	uint64_t illegalAdaptionLengthCount; /* Number of packet discards because of adaption length violation */
+	uint64_t teiDiscardCount; /* Number of packet discards because TEI was raised. */
 };
 
 struct item_s
@@ -98,6 +101,8 @@ int ltntstools_pes_extractor_alloc(void **hdl, uint16_t pid, uint8_t streamId, p
 	ctx->lastCCCounter = 0;
 	ctx->largestRingFrame = 0;
 	ctx->preventWrites = 0;
+	ctx->illegalAdaptionLengthCount = 0;
+	ctx->teiDiscardCount = 0;
 	ltntstools_corrected_clock_init(&ctx->correctedClock, 90000);
 	xorg_list_init(&ctx->pcrList);
 	xorg_list_init(&ctx->listOrdered);
@@ -522,6 +527,17 @@ ssize_t ltntstools_pes_extractor_write(void *hdl, const uint8_t *pkts, int packe
 		if (ltntstools_has_adaption((uint8_t *)pkt)) {
 			offset++;
 			offset += ltntstools_adaption_field_length(pkt);
+		}
+
+		/* Discard any packets with illegal adaptionn field lengths */
+		if (offset >= 188 - 5) {
+			ctx->illegalAdaptionLengthCount++;
+			continue;
+		}
+
+		if (ltntstools_tei_set(pkt)) {
+			ctx->teiDiscardCount++;
+			continue;
 		}
 
 		if (ltntstools_payload_unit_start_indicator(pkt) == 0 && ctx->appending == 1) {
