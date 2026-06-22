@@ -134,6 +134,10 @@ static int _rb_grow(KLRingBuffer *buf, size_t increment)
 		return -2;
 	}
 
+	if (increment <= 0) {
+		return -3;
+	}
+
 	buf->data = (unsigned char *)realloc(buf->data, buf->size + increment);
 	buf->size += increment;
 
